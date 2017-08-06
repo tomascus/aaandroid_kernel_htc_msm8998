@@ -22,6 +22,11 @@
 #include <linux/qpnp/qpnp-revid.h>
 #include "fg-core.h"
 #include "fg-reg.h"
+#ifdef CONFIG_HTC_BATT
+#include <linux/power/htc_battery.h>
+//#include <linux/htc_flags.h>
+#endif
+
 
 #define FG_GEN3_DEV_NAME	"qcom,fg-gen3"
 
@@ -2341,6 +2346,11 @@ done:
 	chip->profile_loaded = true;
 	chip->soc_reporting_ready = true;
 	fg_dbg(chip, FG_STATUS, "profile loaded successfully");
+
+#ifdef CONFIG_HTC_BATT
+	htc_battery_probe_process(GAUGE_PROBE_DONE);
+#endif //CONFIG_HTC_BATT
+
 out:
 	vote(chip->awake_votable, PROFILE_LOAD, false, 0);
 }
@@ -3163,6 +3173,16 @@ static int fg_hw_init(struct fg_chip *chip)
 		pr_err("Error in writing batt_temp_delta, rc=%d\n", rc);
 		return rc;
 	}
+
+#ifdef CONFIG_HTC_BATT
+	// Modify Thermal coefficient by case-02744488
+	rc = fg_masked_write(chip, BATT_INFO_THERM_C1(chip),
+			BATT_INFO_THERM_COEFF_MASK, 0xD8);
+	if (rc < 0) {
+		pr_err("Error in writing batt_temp_delta, rc=%d\n", rc);
+		return rc;
+	}
+#endif //CONFIG_HTC_BATT
 
 	if (chip->dt.rconn_mohms > 0) {
 		rc = fg_rconn_config(chip);
@@ -4162,6 +4182,13 @@ static int fg_gen3_probe(struct platform_device *pdev)
 	device_init_wakeup(chip->dev, true);
 	if (chip->profile_available)
 		schedule_delayed_work(&chip->profile_load_work, 0);
+
+#ifdef CONFIG_HTC_BATT
+	if (get_kernel_flag() & KERNEL_FLAG_ENABLE_BMS_CHARGER_LOG)
+		fg_gen3_debug_mask = 0xFF;
+	else
+		fg_gen3_debug_mask = FG_IRQ;
+#endif //CONFIG_HTC_BATT
 
 	pr_debug("FG GEN3 driver probed successfully\n");
 	return 0;

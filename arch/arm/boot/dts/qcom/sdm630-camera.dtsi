@@ -501,9 +501,8 @@
 		cell-index = <0>;
 		compatible = "qcom,vfe48";
 		reg = <0xca10000 0x4000>,
-			<0xca40000 0x3000>,
-			<0x007801a4 0x8>;
-		reg-names = "vfe", "vfe_vbif", "vfe_fuse";
+			<0xca40000 0x3000>;
+		reg-names = "vfe", "vfe_vbif";
 		interrupts = <0 314 0>;
 		interrupt-names = "vfe";
 		vdd-supply = <&gdsc_vfe0>;
@@ -530,7 +529,7 @@
 			"camss_vfe_ahb_clk", "camss_vfe_vbif_ahb_clk",
 			"camss_vfe_vbif_axi_clk", "vfe_clk_src",
 			"camss_csi_vfe_clk";
-		qcom,clock-rates = <0 0 0 0 0 0 0 0 0 0 0 404000000 0
+		qcom,clock-rates = <0 0 0 0 0 0 0 0 0 0 0 256000000 0
 					0 0 0 0 0 0 0 0 0 0 0 480000000 0
 					0 0 0 0 0 0 0 0 0 0 0 576000000 0>;
 		status = "ok";
@@ -582,9 +581,8 @@
 		cell-index = <1>;
 		compatible = "qcom,vfe48";
 		reg = <0xca14000 0x4000>,
-			<0xca40000 0x3000>,
-			<0x007801a4 0x8>;
-		reg-names = "vfe", "vfe_vbif", "vfe_fuse";
+			<0xca40000 0x3000>;
+		reg-names = "vfe", "vfe_vbif";
 		interrupts = <0 315 0>;
 		interrupt-names = "vfe";
 		vdd-supply = <&gdsc_vfe1>;
@@ -611,7 +609,7 @@
 			"camss_vfe_ahb_clk", "camss_vfe_vbif_ahb_clk",
 			"camss_vfe_vbif_axi_clk", "vfe_clk_src",
 			"camss_csi_vfe_clk";
-		qcom,clock-rates = <0 0 0 0 0 0 0 0 0 0 0 404000000 0
+		qcom,clock-rates = <0 0 0 0 0 0 0 0 0 0 0 256000000 0
 					0 0 0 0 0 0 0 0 0 0 0 480000000 0
 					0 0 0 0 0 0 0 0 0 0 0 576000000 0>;
 		status = "ok";
@@ -758,7 +756,7 @@
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,num-paths = <1>;
 		qcom,msm-bus,vectors-KBps = <62 512 0 0>,
-			<62 512 1200000 1200000>;
+			<62 512 1920000 2880000>;
 		status = "ok";
 	};
 
@@ -800,7 +798,7 @@
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,num-paths = <1>;
 		qcom,msm-bus,vectors-KBps = <62 512 0 0>,
-			<62 512 1200000 1200000>;
+			<62 512 1920000 2880000>;
 		qcom,max-ds-factor = <128>;
 		status = "ok";
 	};

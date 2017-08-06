@@ -30,6 +30,11 @@
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
 
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+#include <htc_mnemosyne/htc_footprint.h>
+#endif
+
+
 static DEFINE_PER_CPU_READ_MOSTLY(u32 *, psci_power_state);
 
 static int __maybe_unused cpu_psci_cpu_init_idle(unsigned int cpu)
@@ -118,6 +123,16 @@ static int cpu_psci_cpu_boot(unsigned int cpu)
 	if (err)
 		pr_err("failed to boot CPU%d (%d)\n", cpu, err);
 
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+	init_cpu_foot_print(cpu, false, true);
+	if (err)
+		set_cpu_foot_print(cpu, 0xfa);
+	else {
+		set_cpu_foot_print(cpu, 0xb);
+                inc_kernel_exit_counter_from_pc(cpu);
+	}
+#endif
+
 	return err;
 }
 
@@ -145,7 +160,17 @@ static void cpu_psci_cpu_die(unsigned int cpu)
 	u32 state = PSCI_POWER_STATE_TYPE_POWER_DOWN <<
 		    PSCI_0_2_POWER_STATE_TYPE_SHIFT;
 
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+	init_cpu_foot_print(cpu, false, true);
+	set_cpu_foot_print(cpu, 0x1);
+#endif
+
 	ret = psci_ops.cpu_off(state);
+
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+	init_cpu_foot_print(cpu, false, true);
+	set_cpu_foot_print(cpu, 0xfe);
+#endif
 
 	pr_crit("unable to power off CPU%u (%d)\n", cpu, ret);
 }
@@ -187,6 +212,9 @@ static int psci_suspend_finisher(unsigned long state_id)
 static int __maybe_unused cpu_psci_cpu_suspend(unsigned long state_id)
 {
 	int ret;
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+	int cpu;
+#endif
 	/*
 	 * idle state id 0 corresponds to wfi, should never be called
 	 * from the cpu_suspend operations
@@ -194,10 +222,17 @@ static int __maybe_unused cpu_psci_cpu_suspend(unsigned long state_id)
 	if (WARN_ON_ONCE(!state_id))
 		return -EINVAL;
 
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+	cpu = smp_processor_id();
+	set_cpu_foot_print(cpu, 0x1);
+#endif
 	if (!psci_power_state_loses_context(state_id))
 		ret = psci_ops.cpu_suspend(state_id, 0);
 	else
 		ret = cpu_suspend(state_id, psci_suspend_finisher);
+#ifdef CONFIG_HTC_DEBUG_FOOTPRINT
+	set_cpu_foot_print(cpu, 0xa);
+#endif
 
 	return ret;
 }

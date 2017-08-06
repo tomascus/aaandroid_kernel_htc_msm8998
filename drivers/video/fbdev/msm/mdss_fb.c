@@ -29,6 +29,7 @@
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/memory.h>
+#include <linux/minifb.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -50,6 +51,7 @@
 #include <sw_sync.h>
 
 #include "mdss_fb.h"
+#include "mdss_htc_util.h"
 #include "mdss_mdp_splash_logo.h"
 #define CREATE_TRACE_POINTS
 #include "mdss_debug.h"
@@ -271,6 +273,66 @@ static int mdss_fb_notify_update(struct msm_fb_data_type *mfd,
 	return ret;
 }
 
+/**
+ * Backlight 1.0.
+ * mdss_backlight_trans() -  Transfer BL level and Brightness level.
+ * Ref htc,brt-bl-table to map BL level and Brightness level.
+ * brightness_to_bl = true, The val was brigthness and return bl level.
+ * brightness_to_bl = false, The val was bl and return brightness level.
+ */
+int mdss_backlight_trans(int val, struct mdss_panel_info *panel_info, bool brightness_to_bl)
+{
+	unsigned int result;
+	int index = 0;
+	u16 *val_table;
+	u16 *ret_table;
+	struct htc_backlight1_table *brt_bl_table = &panel_info->brt_bl_table;
+	int size = brt_bl_table->size;
+
+	/* Not define brt table */
+	if(!size || !brt_bl_table->brt_data || !brt_bl_table->bl_data)
+		return -ENOENT;
+
+	if (brightness_to_bl) {
+		val_table = brt_bl_table->brt_data;
+		ret_table = brt_bl_table->bl_data;
+	} else {
+		val_table = brt_bl_table->bl_data;
+		ret_table = brt_bl_table->brt_data;
+	}
+
+	if (val <= 0){
+		result = 0;
+	} else if (val < val_table[0]) {
+		/* Min value */
+		result = ret_table[0];
+	} else if (val >= val_table[size - 1]) {
+		/* Max value */
+		result = ret_table[size - 1];
+	} else {
+		/* Interpolation method */
+		result = val;
+		for(index = 0; index < size - 1; index++){
+			if (val >= val_table[index] && val <= val_table[index + 1]) {
+				int x0 = val_table[index];
+				int y0 = ret_table[index];
+				int x1 = val_table[index + 1];
+				int y1 = ret_table[index + 1];
+
+				if (x0 == x1)
+					result = y0;
+				else
+					result = y0 + (y1 - y0) * (val - x0) / (x1 - x0);
+
+				break;
+			}
+		}
+	}
+
+	pr_info("mode=%d, apply_cali=%d, %d => %d\n", brightness_to_bl, brt_bl_table->apply_cali, val, result);
+	return result;
+}
+
 static int lcd_backlight_registered;
 
 static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
@@ -287,13 +349,25 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (value > mfd->panel_info->brightness_max)
 		value = mfd->panel_info->brightness_max;
 
-	/* This maps android backlight level 0 to 255 into
-	   driver backlight level 0 to bl_max with rounding */
-	MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
-				mfd->panel_info->brightness_max);
+	bl_lvl = mdss_backlight_trans(value, mfd->panel_info, true);
+
+	/* Change to burst backlight */
+	if (htc_is_burst_bl_on(mfd, value)) {
+		bl_lvl = mfd->panel_info->burst_bl_value;
+		pr_info("Change to burst bl =%d\n", bl_lvl);
+	}
+
+	if (bl_lvl < 0) {
+		/* This maps android backlight level 0 to 255 into
+		   driver backlight level 0 to bl_max with rounding */
+		MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+					mfd->panel_info->brightness_max);
+	}
 
 	if (!bl_lvl && value)
 		bl_lvl = 1;
+
+	mfd->last_bri1 = value;  /* Keep for calibration */
 
 	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
 							!mfd->bl_level)) {
@@ -303,23 +377,10 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	}
 }
 
-static enum led_brightness mdss_fb_get_bl_brightness(
-	struct led_classdev *led_cdev)
-{
-	struct msm_fb_data_type *mfd = dev_get_drvdata(led_cdev->dev->parent);
-	enum led_brightness value;
-
-	MDSS_BL_TO_BRIGHT(value, mfd->bl_level, mfd->panel_info->bl_max,
-			  mfd->panel_info->brightness_max);
-
-	return value;
-}
-
 static struct led_classdev backlight_led = {
 	.name           = "lcd-backlight",
 	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
 	.brightness_set = mdss_fb_set_bl_brightness,
-	.brightness_get = mdss_fb_get_bl_brightness,
 	.max_brightness = MDSS_MAX_BL_BRIGHTNESS,
 };
 
@@ -905,12 +966,6 @@ static ssize_t mdss_fb_get_persist_mode(struct device *dev,
 	return ret;
 }
 
-static ssize_t mdss_fb_idle_pc_notify(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	return scnprintf(buf, PAGE_SIZE, "idle power collapsed\n");
-}
-
 static DEVICE_ATTR(msm_fb_type, S_IRUGO, mdss_fb_get_type, NULL);
 static DEVICE_ATTR(msm_fb_split, S_IRUGO | S_IWUSR, mdss_fb_show_split,
 					mdss_fb_store_split);
@@ -931,8 +986,6 @@ static DEVICE_ATTR(measured_fps, S_IRUGO | S_IWUSR | S_IWGRP,
 	mdss_fb_get_fps_info, NULL);
 static DEVICE_ATTR(msm_fb_persist_mode, S_IRUGO | S_IWUSR,
 	mdss_fb_get_persist_mode, mdss_fb_change_persist_mode);
-static DEVICE_ATTR(idle_power_collapse, S_IRUGO, mdss_fb_idle_pc_notify, NULL);
-
 static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_type.attr,
 	&dev_attr_msm_fb_split.attr,
@@ -946,7 +999,6 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_dfps_mode.attr,
 	&dev_attr_measured_fps.attr,
 	&dev_attr_msm_fb_persist_mode.attr,
-	&dev_attr_idle_power_collapse.attr,
 	NULL,
 };
 
@@ -1333,6 +1385,9 @@ static int mdss_fb_probe(struct platform_device *pdev)
 			pr_err("led_classdev_register failed\n");
 		else
 			lcd_backlight_registered = 1;
+
+		/*HTC: extend attrs*/
+		htc_register_attrs(&backlight_led.dev->kobj, mfd);
 	}
 
 	mdss_fb_init_panel_modes(mfd, pdata);
@@ -1737,6 +1792,11 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 	if (!mfd->allow_bl_update) {
 		pdata = dev_get_platdata(&mfd->pdev->dev);
 		if ((pdata) && (pdata->set_backlight)) {
+			pr_info("bl_level %d => %d\n", mfd->bl_level, mfd->unset_bl_level);
+			/* HTC TODO: turn on backlight right after kickoff may not guarantee
+			       internal gram was initialized. Defer 1 frame time before enable.
+			 */
+			udelay(16666);
 			mfd->bl_level = mfd->unset_bl_level;
 			temp = mfd->bl_level;
 			if (mfd->mdp.ad_calc_bl)
@@ -1931,6 +1991,9 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
 
 	/* Reset the backlight only if the panel was off */
 	if (mdss_panel_is_power_off(cur_power_state)) {
+		if (!mfd->panel_info->cont_splash_enabled && mfd->panel_info->pdest == DISPLAY_1)
+			htc_set_color_temp(mfd, 1);
+
 		mutex_lock(&mfd->bl_lock);
 		if (!mfd->allow_bl_update) {
 			mfd->allow_bl_update = true;
@@ -2059,6 +2122,7 @@ static int mdss_fb_blank(int blank_mode, struct fb_info *info)
 	struct mdss_panel_data *pdata;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 
+	pr_info("mode++: %d\n", blank_mode);
 	ret = mdss_fb_pan_idle(mfd);
 	if (ret) {
 		pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
@@ -2101,6 +2165,7 @@ static int mdss_fb_blank(int blank_mode, struct fb_info *info)
 end:
 	mutex_unlock(&mfd->mdss_sysfs_lock);
 
+	pr_info("mode--: %d\n", blank_mode);
 	return ret;
 }
 
@@ -2662,6 +2727,11 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	var->xres_virtual = var->xres;
 	var->yres_virtual = panel_info->yres * mfd->fb_page;
 	var->bits_per_pixel = bpp * 8;	/* FrameBuffer color depth */
+
+	/* HTC: register camera brightness */
+	if (panel_info->camera_blk) {
+		htc_register_camera_bkl(panel_info->camera_blk);
+	}
 
 	/*
 	 * Populate smem length here for uspace to get the
@@ -3435,14 +3505,6 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 	mfd->msm_fb_backup.disp_commit.l_roi =  commit_v1->left_roi;
 	mfd->msm_fb_backup.disp_commit.r_roi =  commit_v1->right_roi;
 	mfd->msm_fb_backup.disp_commit.flags =  commit_v1->flags;
-	if (commit_v1->flags & MDP_COMMIT_UPDATE_BRIGHTNESS) {
-		MDSS_BRIGHT_TO_BL(mfd->bl_extn_level, commit_v1->bl_level,
-			mfd->panel_info->bl_max,
-			mfd->panel_info->brightness_max);
-		if (!mfd->bl_extn_level && commit_v1->bl_level)
-			mfd->bl_extn_level = 1;
-	} else
-		mfd->bl_extn_level = -1;
 
 	mutex_lock(&mfd->mdp_sync_pt_data.sync_mutex);
 	atomic_inc(&mfd->mdp_sync_pt_data.commit_cnt);
@@ -3685,8 +3747,14 @@ static int __mdss_fb_perform_commit(struct msm_fb_data_type *mfd)
 	}
 
 skip_commit:
-	if (!ret)
+	if (!ret) {
+		if (mfd->panel_info->pdest == DISPLAY_1) {
+			htc_set_color_temp(mfd, 0);
+			htc_update_bl_cali_data(mfd);  		/* HTC: set brightness calibration value */
+		}
+
 		mdss_fb_update_backlight(mfd);
+	}
 
 	if (IS_ERR_VALUE(ret) || !sync_pt_data->flushed) {
 		mdss_fb_release_kickoff(mfd);
@@ -4306,6 +4374,8 @@ static int mdss_fb_handle_buf_sync_ioctl(struct msm_sync_pt_data *sync_pt_data,
 		goto buf_sync_err_2;
 	}
 
+	sync_fence_install(rel_fence, rel_fen_fd);
+
 	ret = copy_to_user(buf_sync->rel_fen_fd, &rel_fen_fd, sizeof(int));
 	if (ret) {
 		pr_err("%s: copy_to_user failed\n", sync_pt_data->fence_name);
@@ -4342,6 +4412,8 @@ static int mdss_fb_handle_buf_sync_ioctl(struct msm_sync_pt_data *sync_pt_data,
 		goto buf_sync_err_3;
 	}
 
+	sync_fence_install(retire_fence, retire_fen_fd);
+
 	ret = copy_to_user(buf_sync->retire_fen_fd, &retire_fen_fd,
 			sizeof(int));
 	if (ret) {
@@ -4351,9 +4423,6 @@ static int mdss_fb_handle_buf_sync_ioctl(struct msm_sync_pt_data *sync_pt_data,
 		sync_fence_put(retire_fence);
 		goto buf_sync_err_3;
 	}
-
-	sync_fence_install(rel_fence, rel_fen_fd);
-	sync_fence_install(retire_fence, retire_fen_fd);
 
 skip_retire_fence:
 	mutex_unlock(&sync_pt_data->sync_mutex);
@@ -4963,6 +5032,21 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 		ret = mdss_fb_async_position_update_ioctl(info, argp);
 		break;
 
+	/* HTC: We wish to implement dedicated usb fb device in future.
+	 *      However, keep things simple now. */
+	case MSMFB_USBFB_INIT:
+		ret = minifb_ioctl_handler(MINIFB_INIT, argp);
+		break;
+	case MSMFB_USBFB_TERMINATE:
+		ret = minifb_ioctl_handler(MINIFB_TERMINATE, argp);
+		break;
+	case MSMFB_USBFB_QUEUE_BUFFER:
+		ret = minifb_ioctl_handler(MINIFB_QUEUE_BUFFER, argp);
+		break;
+	case MSMFB_USBFB_DEQUEUE_BUFFER:
+		ret = minifb_ioctl_handler(MINIFB_DEQUEUE_BUFFER, argp);
+		break;
+
 	default:
 		if (mfd->mdp.ioctl_handler)
 			ret = mfd->mdp.ioctl_handler(mfd, cmd, argp);
@@ -5205,18 +5289,5 @@ void mdss_fb_calc_fps(struct msm_fb_data_type *mfd)
 			mfd->index, (unsigned int)fps/10, (unsigned int)fps%10);
 		mfd->fps_info.last_sampled_time_us = current_time_us;
 		mfd->fps_info.frame_count = 0;
-	}
-}
-
-void mdss_fb_idle_pc(struct msm_fb_data_type *mfd)
-{
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
-
-	if (mdss_fb_is_power_off(mfd))
-		return;
-
-	if ((mfd->panel_info->type == MIPI_CMD_PANEL) && mdp5_data) {
-		pr_debug("Notify fb%d idle power collapsed\n", mfd->index);
-		sysfs_notify(&mfd->fbi->dev->kobj, NULL, "idle_power_collapse");
 	}
 }

@@ -661,6 +661,7 @@ static bool is_parallel_available(struct pl_data *chip)
 	return true;
 }
 
+#ifndef CONFIG_HTC_BATT
 static void handle_main_charge_type(struct pl_data *chip)
 {
 	union power_supply_propval pval = {0, };
@@ -706,6 +707,7 @@ static void handle_main_charge_type(struct pl_data *chip)
 	/* remember the new state only if it isn't any of the above */
 	chip->charge_type = pval.intval;
 }
+#endif // CONFIG_HTC_BATT
 
 #define MIN_ICL_CHANGE_DELTA_UA		300000
 static void handle_settled_icl_change(struct pl_data *chip)
@@ -737,6 +739,7 @@ static void handle_settled_icl_change(struct pl_data *chip)
 	}
 }
 
+#ifndef CONFIG_HTC_BATT
 static void handle_parallel_in_taper(struct pl_data *chip)
 {
 	union power_supply_propval pval = {0, };
@@ -765,6 +768,7 @@ static void handle_parallel_in_taper(struct pl_data *chip)
 		return;
 	}
 }
+#endif // CONFIG_HTC_BATT
 
 static void status_change_work(struct work_struct *work)
 {
@@ -779,9 +783,13 @@ static void status_change_work(struct work_struct *work)
 
 	is_parallel_available(chip);
 
+#ifndef CONFIG_HTC_BATT
 	handle_main_charge_type(chip);
+#endif // CONFIG_HTC_BATT
 	handle_settled_icl_change(chip);
+#ifndef CONFIG_HTC_BATT
 	handle_parallel_in_taper(chip);
+#endif // CONFIG_HTC_BATT
 }
 
 static int pl_notifier_call(struct notifier_block *nb,

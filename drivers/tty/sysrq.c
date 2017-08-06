@@ -55,11 +55,10 @@
 static int __read_mostly sysrq_enabled = CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE;
 static bool __read_mostly sysrq_always_enabled;
 
-bool sysrq_on(void)
+static bool sysrq_on(void)
 {
 	return sysrq_enabled || sysrq_always_enabled;
 }
-EXPORT_SYMBOL(sysrq_on);
 
 /*
  * A value of 1 means 'all', other nonzero values are an op mask:
@@ -291,6 +290,8 @@ static struct sysrq_key_op sysrq_showstate_op = {
 static void sysrq_handle_showstate_blocked(int key)
 {
 	show_state_filter(TASK_UNINTERRUPTIBLE);
+	pr_info("### Show All Tasks in System Server ###\n");
+	show_thread_group_state_filter("system_server", 0);
 }
 static struct sysrq_key_op sysrq_showstate_blocked_op = {
 	.handler	= sysrq_handle_showstate_blocked,
@@ -538,6 +539,8 @@ void __handle_sysrq(int key, bool check_mask)
 	 */
 	orig_log_level = console_loglevel;
 	console_loglevel = CONSOLE_LOGLEVEL_DEFAULT;
+	pr_info("%s (%d:%d) triggered SysRq\n",
+			current->comm, current->tgid, current->pid);
 	pr_info("SysRq : ");
 
         op_p = __sysrq_get_key_op(key);

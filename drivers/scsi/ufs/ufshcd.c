@@ -246,7 +246,7 @@ static u32 ufs_query_desc_max_size[] = {
 	QUERY_DESC_RFU_MAX_SIZE,
 	QUERY_DESC_GEOMETRY_MAZ_SIZE,
 	QUERY_DESC_POWER_MAX_SIZE,
-	QUERY_DESC_RFU_MAX_SIZE,
+	QUERY_DESC_HEALTH_MAX_SIZE,
 };
 
 enum {
@@ -1388,7 +1388,7 @@ static void ufshcd_gate_work(struct work_struct *work)
 	 * state to CLKS_ON.
 	 */
 	if (hba->clk_gating.is_suspended ||
-		(hba->clk_gating.state == REQ_CLKS_ON)) {
+		(hba->clk_gating.state != REQ_CLKS_OFF)) {
 		hba->clk_gating.state = CLKS_ON;
 		trace_ufshcd_clk_gating(dev_name(hba->dev),
 			hba->clk_gating.state);
@@ -3606,6 +3606,13 @@ static inline int ufshcd_read_power_desc(struct ufs_hba *hba,
 	return ufshcd_read_desc(hba, QUERY_DESC_IDN_POWER, 0, buf, size);
 }
 
+int ufshcd_read_health_desc(struct ufs_hba *hba,
+					 u8 *buf,
+					 u32 size)
+{
+	return ufshcd_read_desc(hba, QUERY_DESC_IDN_HEALTH, 0, buf, size);
+}
+
 int ufshcd_read_device_desc(struct ufs_hba *hba, u8 *buf, u32 size)
 {
 	return ufshcd_read_desc(hba, QUERY_DESC_IDN_DEVICE, 0, buf, size);
@@ -4289,15 +4296,25 @@ static int __ufshcd_uic_hibern8_enter(struct ufs_hba *hba)
 	 * mode hence full reinit is required to move link to HS speeds.
 	 */
 	if (ret || hba->full_init_linereset) {
+		int err;
+
 		hba->full_init_linereset = false;
 		ufshcd_update_error_stats(hba, UFS_ERR_HIBERN8_ENTER);
 		dev_err(hba->dev, "%s: hibern8 enter failed. ret = %d",
 			__func__, ret);
 		/*
-		 * If link recovery fails then return error so that caller
-		 * don't retry the hibern8 enter again.
+		 * If link recovery fails then return error code (-ENOLINK)
+		 * returned ufshcd_link_recovery().
+		 * If link recovery succeeds then return -EAGAIN to attempt
+		 * hibern8 enter retry again.
 		 */
-		ret = ufshcd_link_recovery(hba);
+		err = ufshcd_link_recovery(hba);
+		if (err) {
+			dev_err(hba->dev, "%s: link recovery failed", __func__);
+			ret = err;
+		} else {
+			ret = -EAGAIN;
+		}
 	} else {
 		dev_dbg(hba->dev, "%s: Hibern8 Enter at %lld us", __func__,
 			ktime_to_us(ktime_get()));
@@ -4314,8 +4331,8 @@ int ufshcd_uic_hibern8_enter(struct ufs_hba *hba)
 		ret = __ufshcd_uic_hibern8_enter(hba);
 		if (!ret)
 			goto out;
-		/* Unable to recover the link, so no point proceeding */
-		 if (ret == -ENOLINK)
+		else if (ret != -EAGAIN)
+			/* Unable to recover the link, so no point proceeding */
 			BUG();
 	}
 out:
@@ -5625,8 +5642,16 @@ static void ufshcd_force_reset_auto_bkops(struct ufs_hba *hba)
 
 static inline int ufshcd_get_bkops_status(struct ufs_hba *hba, u32 *status)
 {
-	return ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_READ_ATTR,
+	int ret = ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_READ_ATTR,
 			QUERY_ATTR_IDN_BKOPS_STATUS, 0, 0, status);
+	if (ret)
+		goto out;
+	if ((hba->bkops_level != *status))
+		dev_err(hba->dev, "%s: bkops status old : %d new : %d\n",
+				__func__, hba->bkops_level, *status);
+	hba->bkops_level = *status;
+out:
+	return ret;
 }
 
 /**
@@ -9207,6 +9232,20 @@ static int ufshcd_scale_gear(struct ufs_hba *hba, bool scale_up)
 	if (scale_up) {
 		memcpy(&new_pwr_info, &hba->clk_scaling.saved_pwr_info.info,
 		       sizeof(struct ufs_pa_layer_attr));
+
+		/* scale up to G2 first */
+		new_pwr_info.gear_tx = UFS_HS_G2;
+		new_pwr_info.gear_rx = UFS_HS_G2;
+		ret = ufshcd_change_power_mode(hba, &new_pwr_info);
+		if (ret)
+			goto out;
+
+		/* scale up to G3 now */
+		new_pwr_info.gear_tx = UFS_HS_G3;
+		new_pwr_info.gear_rx = UFS_HS_G3;
+		ret = ufshcd_change_power_mode(hba, &new_pwr_info);
+		if (ret)
+		goto out;
 	} else {
 		memcpy(&new_pwr_info, &hba->pwr_info,
 		       sizeof(struct ufs_pa_layer_attr));
@@ -9226,10 +9265,10 @@ static int ufshcd_scale_gear(struct ufs_hba *hba, bool scale_up)
 				new_pwr_info.pwr_rx = FASTAUTO_MODE;
 			}
 		}
+		ret = ufshcd_change_power_mode(hba, &new_pwr_info);
 	}
 
-	ret = ufshcd_change_power_mode(hba, &new_pwr_info);
-
+out:
 	if (ret)
 		dev_err(hba->dev, "%s: failed err %d, old gear: (tx %d rx %d), new gear: (tx %d rx %d), scale_up = %d",
 			__func__, ret,
@@ -9292,9 +9331,19 @@ static int ufshcd_devfreq_scale(struct ufs_hba *hba, bool scale_up)
 			goto clk_scaling_unprepare;
 	}
 
+	ret = ufshcd_uic_hibern8_enter(hba);
+	if (ret)
+	/* link will be bad state so no need to scale_up_gear */
+		return ret;
+
 	ret = ufshcd_scale_clks(hba, scale_up);
 	if (ret)
 		goto scale_up_gear;
+
+	ret = ufshcd_uic_hibern8_exit(hba);
+	if (ret)
+	/* link will be bad state so no need to scale_up_gear */
+		return ret;
 
 	/* scale up the gear after scaling up clocks */
 	if (scale_up) {
