@@ -56,8 +56,8 @@
 #define C1_B_Cb		1	/* B/Cb */
 #define C0_G_Y		0	/* G/luma */
 
-/* wait for at most 2 vsync for lowest refresh rate (24hz) */
-#define KOFF_TIMEOUT_MS 84
+/* wait for 1 second for unexpected irq missing */
+#define KOFF_TIMEOUT_MS 1000
 #define KOFF_TIMEOUT msecs_to_jiffies(KOFF_TIMEOUT_MS)
 
 #define OVERFETCH_DISABLE_TOP		BIT(0)
@@ -162,14 +162,6 @@ enum mdss_mdp_mixer_mux {
 	MDSS_MDP_MIXER_MUX_DEFAULT,
 	MDSS_MDP_MIXER_MUX_LEFT,
 	MDSS_MDP_MIXER_MUX_RIGHT,
-};
-
-enum mdss_secure_transition {
-	SECURE_TRANSITION_NONE,
-	SD_NON_SECURE_TO_SECURE,
-	SD_SECURE_TO_NON_SECURE,
-	SC_NON_SECURE_TO_SECURE,
-	SC_SECURE_TO_NON_SECURE,
 };
 
 static inline enum mdss_mdp_sspp_index get_pipe_num_from_ndx(u32 ndx)
@@ -661,7 +653,6 @@ struct mdss_mdp_img_data {
 	struct dma_buf *srcp_dma_buf;
 	struct dma_buf_attachment *srcp_attachment;
 	struct sg_table *srcp_table;
-	struct ion_handle *ihandle;
 };
 
 enum mdss_mdp_data_state {
@@ -703,8 +694,6 @@ struct pp_hist_col_info {
 	char __iomem *base;
 	u32 intr_shift;
 	u32 disp_num;
-	u32 expect_sum;
-	u32 next_sum;
 	struct mdss_mdp_ctl *ctl;
 };
 
@@ -968,7 +957,9 @@ struct mdss_overlay_private {
 	struct kthread_work vsync_work;
 	struct task_struct *thread;
 
-	u8 secure_transition_state;
+	/* HTC ADD*/
+	void *splash_mem_vaddr;
+	dma_addr_t splash_mem_dma;
 };
 
 struct mdss_mdp_set_ot_params {
@@ -1992,7 +1983,6 @@ void mdss_mdp_disable_hw_irq(struct mdss_data_type *mdata);
 
 void mdss_mdp_set_supported_formats(struct mdss_data_type *mdata);
 int mdss_mdp_dest_scaler_setup_locked(struct mdss_mdp_mixer *mixer);
-void *mdss_mdp_intf_get_ctx_base(struct mdss_mdp_ctl *ctl, int intf_num);
 
 #ifdef CONFIG_FB_MSM_MDP_NONE
 struct mdss_data_type *mdss_mdp_get_mdata(void)

@@ -5,6 +5,7 @@
 #include <linux/page_ext.h>
 #include <linux/poison.h>
 #include <linux/ratelimit.h>
+#include <htc_debug/stability/debug_page_user_trace.h>
 
 #ifndef mark_addr_rdonly
 #define mark_addr_rdonly(a)
@@ -148,4 +149,6 @@ void __kernel_map_pages(struct page *page, int numpages, int enable)
 		unpoison_pages(page, numpages);
 	else
 		poison_pages(page, numpages);
+
+	set_page_user_trace(page, numpages, !enable);
 }

@@ -661,6 +661,7 @@ static bool is_parallel_available(struct pl_data *chip)
 	return true;
 }
 
+#ifndef CONFIG_HTC_BATT
 static void handle_main_charge_type(struct pl_data *chip)
 {
 	union power_supply_propval pval = {0, };
@@ -706,9 +707,10 @@ static void handle_main_charge_type(struct pl_data *chip)
 	/* remember the new state only if it isn't any of the above */
 	chip->charge_type = pval.intval;
 }
+#endif // CONFIG_HTC_BATT
 
 #define MIN_ICL_CHANGE_DELTA_UA		300000
-static void handle_settled_aicl_split(struct pl_data *chip)
+static void handle_settled_icl_change(struct pl_data *chip)
 {
 	union power_supply_propval pval = {0, };
 	int rc;
@@ -732,9 +734,12 @@ static void handle_settled_aicl_split(struct pl_data *chip)
 		if (abs((chip->main_settled_ua - chip->pl_settled_ua)
 				- pval.intval) > MIN_ICL_CHANGE_DELTA_UA)
 			split_settled(chip);
+	} else {
+		rerun_election(chip->fcc_votable);
 	}
 }
 
+#ifndef CONFIG_HTC_BATT
 static void handle_parallel_in_taper(struct pl_data *chip)
 {
 	union power_supply_propval pval = {0, };
@@ -763,6 +768,7 @@ static void handle_parallel_in_taper(struct pl_data *chip)
 		return;
 	}
 }
+#endif // CONFIG_HTC_BATT
 
 static void status_change_work(struct work_struct *work)
 {
@@ -777,9 +783,13 @@ static void status_change_work(struct work_struct *work)
 
 	is_parallel_available(chip);
 
+#ifndef CONFIG_HTC_BATT
 	handle_main_charge_type(chip);
-	handle_settled_aicl_split(chip);
+#endif // CONFIG_HTC_BATT
+	handle_settled_icl_change(chip);
+#ifndef CONFIG_HTC_BATT
 	handle_parallel_in_taper(chip);
+#endif // CONFIG_HTC_BATT
 }
 
 static int pl_notifier_call(struct notifier_block *nb,
@@ -792,7 +802,8 @@ static int pl_notifier_call(struct notifier_block *nb,
 		return NOTIFY_OK;
 
 	if ((strcmp(psy->desc->name, "parallel") == 0)
-	    || (strcmp(psy->desc->name, "battery") == 0))
+	    || (strcmp(psy->desc->name, "battery") == 0)
+	    || (strcmp(psy->desc->name, "main") == 0))
 		schedule_work(&chip->status_change_work);
 
 	return NOTIFY_OK;

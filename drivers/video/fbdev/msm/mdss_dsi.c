@@ -34,6 +34,7 @@
 #include "mdss_dsi_phy.h"
 #include "mdss_dba_utils.h"
 
+#define XO_CLK_RATE	19200000
 #define CMDLINE_DSI_CTL_NUM_STRING_LEN 2
 
 /* Master structure to hold all the information about the DSI/panel */
@@ -291,15 +292,19 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 		ret = 0;
 	}
 
-	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
+	/* HTC: At power off stage, move pin contrl function behind power off sequence */
+	/* if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
 		pr_debug("reset disable: pinctrl not enabled\n");
-
+	*/
 	ret = msm_dss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 0);
 	if (ret)
 		pr_err("%s: failed to disable vregs for %s\n",
 			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+	/* HTC: At power off stage, move pin contrl function behind power off sequenc */
+	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
+		pr_debug("reset disable: pinctrl not enabled\n");
 
 end:
 	return ret;
@@ -318,6 +323,10 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
+	/* HTC: At power on stage, use pin contrl function before starting power on sequence */
+	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
+		pr_debug("reset disable: pinctrl not enabled\n");
+
 	ret = msm_dss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 1);
@@ -335,8 +344,10 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	 */
 	if (pdata->panel_info.cont_splash_enabled ||
 		!pdata->panel_info.mipi.lp11_init) {
-		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
+		/* HTC: At power on stage, use pin contrl function before starting power on sequence */
+		/* if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
 			pr_debug("reset enable: pinctrl not enabled\n");
+		*/
 
 		ret = mdss_dsi_panel_reset(pdata, 1);
 		if (ret)
@@ -1455,8 +1466,10 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	 * data lanes for LP11 init
 	 */
 	if (mipi->lp11_init) {
-		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
+		/* HTC: At power on stage, use pin contrl function before starting power on sequence */
+		/* if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
 			pr_debug("reset enable: pinctrl not enabled\n");
+		*/
 		mdss_dsi_panel_reset(pdata, 1);
 	}
 
@@ -1493,6 +1506,11 @@ static int mdss_dsi_pinctrl_set_state(
 		return PTR_ERR(ctrl_pdata->pin_res.pinctrl);
 
 	pinfo = &ctrl_pdata->panel_data.panel_info;
+
+	/* HTC: skip pin contrl while device boot up */
+	if (pinfo->cont_splash_enabled)
+		return 0;
+
 	if ((mdss_dsi_is_right_ctrl(ctrl_pdata) &&
 		mdss_dsi_is_hw_config_split(ctrl_pdata->shared_data)) ||
 			pinfo->is_dba_panel) {
@@ -1575,12 +1593,10 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 		mdss_dsi_clk_ctrl(sctrl, sctrl->dsi_clk_handle,
 				  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_ON);
 
-	if (ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_LP) {
+	if (mdss_dsi_is_panel_on_lp(pdata)) {
 		pr_debug("%s: dsi_unblank with panel always on\n", __func__);
 		if (ctrl_pdata->low_power_config)
 			ret = ctrl_pdata->low_power_config(pdata, false);
-		if (!ret)
-			ctrl_pdata->ctrl_state &= ~CTRL_STATE_PANEL_LP;
 		goto error;
 	}
 
@@ -1600,8 +1616,11 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 	if ((pdata->panel_info.type == MIPI_CMD_PANEL) &&
 		mipi->vsync_enable && mipi->hw_vsync_mode) {
 		mdss_dsi_set_tear_on(ctrl_pdata);
+#if 0
+		/* VSYNC_GPIO irq was managed by mdss_dsi_status */
 		if (mdss_dsi_is_te_based_esd(ctrl_pdata))
 			enable_irq(gpio_to_irq(ctrl_pdata->disp_te_gpio));
+#endif
 	}
 
 	ctrl_pdata->ctrl_state |= CTRL_STATE_PANEL_INIT;
@@ -1645,8 +1664,6 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 		pr_debug("%s: low power state requested\n", __func__);
 		if (ctrl_pdata->low_power_config)
 			ret = ctrl_pdata->low_power_config(pdata, true);
-		if (!ret)
-			ctrl_pdata->ctrl_state |= CTRL_STATE_PANEL_LP;
 		goto error;
 	}
 
@@ -1671,11 +1688,14 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 
 	if ((pdata->panel_info.type == MIPI_CMD_PANEL) &&
 		mipi->vsync_enable && mipi->hw_vsync_mode) {
+#if 0
+		/* VSYNC_GPIO irq was managed by mdss_dsi_status */
 		if (mdss_dsi_is_te_based_esd(ctrl_pdata)) {
-				disable_irq(gpio_to_irq(
-					ctrl_pdata->disp_te_gpio));
-				atomic_dec(&ctrl_pdata->te_irq_ready);
+			disable_irq(gpio_to_irq(
+				ctrl_pdata->disp_te_gpio));
+			atomic_set(&ctrl_pdata->te_irq_ready, 0);
 		}
+#endif
 		mdss_dsi_set_tear_off(ctrl_pdata);
 	}
 
@@ -1689,8 +1709,7 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 			}
 			ATRACE_END("dsi_panel_off");
 		}
-		ctrl_pdata->ctrl_state &= ~(CTRL_STATE_PANEL_INIT |
-			CTRL_STATE_PANEL_LP);
+		ctrl_pdata->ctrl_state &= ~CTRL_STATE_PANEL_INIT;
 	}
 
 error:
@@ -1870,7 +1889,7 @@ static void __mdss_dsi_dyn_refresh_config(
 
 static void __mdss_dsi_calc_dfps_delay(struct mdss_panel_data *pdata)
 {
-	u32 esc_clk_rate_hz;
+	u32 esc_clk_rate = XO_CLK_RATE;
 	u32 pipe_delay, pipe_delay2 = 0, pll_delay;
 	u32 hsync_period = 0;
 	u32 pclk_to_esc_ratio, byte_to_esc_ratio, hr_bit_to_esc_ratio;
@@ -1897,11 +1916,9 @@ static void __mdss_dsi_calc_dfps_delay(struct mdss_panel_data *pdata)
 	pinfo = &pdata->panel_info;
 	pd = &(pinfo->mipi.dsi_phy_db);
 
-	esc_clk_rate_hz = ctrl_pdata->esc_clk_rate_hz;
-	pclk_to_esc_ratio = (ctrl_pdata->pclk_rate / esc_clk_rate_hz);
-	byte_to_esc_ratio = (ctrl_pdata->byte_clk_rate / esc_clk_rate_hz);
-	hr_bit_to_esc_ratio = ((ctrl_pdata->byte_clk_rate * 4) /
-					esc_clk_rate_hz);
+	pclk_to_esc_ratio = (ctrl_pdata->pclk_rate / esc_clk_rate);
+	byte_to_esc_ratio = (ctrl_pdata->byte_clk_rate / esc_clk_rate);
+	hr_bit_to_esc_ratio = ((ctrl_pdata->byte_clk_rate * 4) / esc_clk_rate);
 
 	hsync_period = mdss_panel_get_htotal(pinfo, true);
 	pipe_delay = (hsync_period + 1) / pclk_to_esc_ratio;
@@ -1923,7 +1940,7 @@ static void __mdss_dsi_calc_dfps_delay(struct mdss_panel_data *pdata)
 			((pd->timing[4] >> 1) + 1)) / hr_bit_to_esc_ratio);
 
 	/* 130 us pll delay recommended by h/w doc */
-	pll_delay = ((130 * esc_clk_rate_hz) / 1000000) * 2;
+	pll_delay = ((130 * esc_clk_rate) / 1000000) * 2;
 
 	MIPI_OUTP((ctrl_pdata->ctrl_base) + DSI_DYNAMIC_REFRESH_PIPE_DELAY,
 						pipe_delay);
@@ -2516,15 +2533,6 @@ static int mdss_dsi_register_mdp_callback(struct mdss_dsi_ctrl_pdata *ctrl,
 	return 0;
 }
 
-static int mdss_dsi_register_clamp_handler(struct mdss_dsi_ctrl_pdata *ctrl,
-	struct mdss_intf_ulp_clamp *clamp_handler)
-{
-	mutex_lock(&ctrl->mutex);
-	ctrl->clamp_handler = clamp_handler;
-	mutex_unlock(&ctrl->mutex);
-	return 0;
-}
-
 static struct device_node *mdss_dsi_get_fb_node_cb(struct platform_device *pdev)
 {
 	struct device_node *fb_node;
@@ -2708,10 +2716,6 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 	case MDSS_EVENT_REGISTER_MDP_CALLBACK:
 		rc = mdss_dsi_register_mdp_callback(ctrl_pdata,
 			(struct mdss_intf_recovery *)arg);
-		break;
-	case MDSS_EVENT_REGISTER_CLAMP_HANDLER:
-		rc = mdss_dsi_register_clamp_handler(ctrl_pdata,
-			(struct mdss_intf_ulp_clamp *)arg);
 		break;
 	case MDSS_EVENT_DSI_DYNAMIC_SWITCH:
 		mode = (u32)(unsigned long) arg;
@@ -3071,7 +3075,7 @@ static int mdss_dsi_set_clk_rates(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 
 	rc = mdss_dsi_clk_set_link_rate(ctrl_pdata->dsi_clk_handle,
 					MDSS_DSI_LINK_ESC_CLK,
-					ctrl_pdata->esc_clk_rate_hz,
+					19200000,
 					MDSS_DSI_CLK_UPDATE_CLK_RATE_AT_ON);
 	if (rc) {
 		pr_err("%s: dsi_esc_clk - clk_set_rate failed\n",
@@ -4250,9 +4254,6 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 	pr_debug("%s: pclk=%d, bclk=%d\n", __func__,
 			ctrl_pdata->pclk_rate, ctrl_pdata->byte_clk_rate);
 
-	ctrl_pdata->esc_clk_rate_hz = pinfo->esc_clk_rate_hz;
-	pr_debug("%s: esc clk=%d\n", __func__,
-			ctrl_pdata->esc_clk_rate_hz);
 
 	rc = mdss_dsi_get_dt_vreg_data(&ctrl_pdev->dev, pan_node,
 		&ctrl_pdata->panel_power_data, DSI_PANEL_PM);
