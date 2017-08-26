@@ -167,7 +167,7 @@ void msm_isp_util_get_bandwidth_stats(struct vfe_device *vfe_dev,
 	stats->last_overflow_ab = vfe_dev->msm_isp_last_overflow_ab;
 	stats->last_overflow_ib = vfe_dev->msm_isp_last_overflow_ib;
 	stats->vfe_clk_rate = vfe_dev->vfe_clk_info[
-		vfe_dev->hw_info->vfe_clk_idx].clk_rate;
+				vfe_dev->hw_info->vfe_clk_idx].clk_rate;
 	stats->cpp_clk_rate = msm_isp_cpp_clk_rate;
 }
 
@@ -540,7 +540,7 @@ int msm_isp_cfg_input(struct vfe_device *vfe_dev, void *arg)
 	 * rate needed by another input
 	 */
 	if (pixel_clock > vfe_dev->vfe_clk_info[
-		vfe_dev->hw_info->vfe_clk_idx].clk_rate) {
+				vfe_dev->hw_info->vfe_clk_idx].clk_rate) {
 		rc = vfe_dev->hw_info->vfe_ops.platform_ops.set_clk_rate(
 			vfe_dev,
 			&pixel_clock);
