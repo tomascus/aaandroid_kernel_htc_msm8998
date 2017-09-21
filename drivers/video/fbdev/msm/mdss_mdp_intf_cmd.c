@@ -1202,7 +1202,7 @@ static int mdss_mdp_cmd_wait4readptr(struct mdss_mdp_cmd_ctx *ctx)
 	return rc;
 }
 
-static int mdss_mdp_cmd_intf_callback(void *data, int event)
+static void mdss_mdp_cmd_intf_callback(void *data, int event)
 {
 	struct mdss_mdp_cmd_ctx *ctx = data;
 	struct mdss_mdp_pp_tear_check *te = NULL;
@@ -1211,11 +1211,11 @@ static int mdss_mdp_cmd_intf_callback(void *data, int event)
 
 	if (!data) {
 		pr_err("%s: invalid ctx\n", __func__);
-		return -EINVAL;
+		return;
 	}
 
 	if (!ctx->ctl)
-		return -EINVAL;
+		return;
 
 	switch (event) {
 	case MDP_INTF_CALLBACK_DSI_WAIT:
@@ -1227,7 +1227,7 @@ static int mdss_mdp_cmd_intf_callback(void *data, int event)
 		 * just return
 		 */
 		if (ctx->intf_stopped || !is_pingpong_split(ctx->ctl->mfd))
-			return -EINVAL;
+			return;
 		atomic_inc(&ctx->rdptr_cnt);
 
 		/* enable clks and rd_ptr interrupt */
@@ -1236,7 +1236,7 @@ static int mdss_mdp_cmd_intf_callback(void *data, int event)
 		mixer = mdss_mdp_mixer_get(ctx->ctl, MDSS_MDP_MIXER_MUX_LEFT);
 		if (!mixer) {
 			pr_err("%s: null mixer\n", __func__);
-			return -EINVAL;
+			return;
 		}
 
 		/* wait for read pointer */
@@ -1260,7 +1260,6 @@ static int mdss_mdp_cmd_intf_callback(void *data, int event)
 		pr_debug("%s: unhandled event=%d\n", __func__, event);
 		break;
 	}
-	return 0;
 }
 
 static void mdss_mdp_cmd_lineptr_done(void *arg)
@@ -1286,7 +1285,7 @@ static void mdss_mdp_cmd_lineptr_done(void *arg)
 	spin_unlock(&ctx->clk_lock);
 }
 
-static int mdss_mdp_cmd_intf_recovery(void *data, int event)
+static void mdss_mdp_cmd_intf_recovery(void *data, int event)
 {
 	struct mdss_mdp_cmd_ctx *ctx = data;
 	unsigned long flags;
@@ -1294,11 +1293,11 @@ static int mdss_mdp_cmd_intf_recovery(void *data, int event)
 
 	if (!data) {
 		pr_err("%s: invalid ctx\n", __func__);
-		return -EINVAL;
+		return;
 	}
 
 	if (!ctx->ctl)
-		return -EINVAL;
+		return;
 
 	/*
 	 * Currently, only intf_fifo_underflow is
@@ -1308,7 +1307,7 @@ static int mdss_mdp_cmd_intf_recovery(void *data, int event)
 	if (event != MDP_INTF_DSI_CMD_FIFO_UNDERFLOW) {
 		pr_warn("%s: unsupported recovery event:%d\n",
 					__func__, event);
-		return -EPERM;
+		return;
 	}
 
 	if (atomic_read(&ctx->koff_cnt)) {
@@ -1332,7 +1331,6 @@ static int mdss_mdp_cmd_intf_recovery(void *data, int event)
 	if (notify_frame_timeout)
 		mdss_mdp_ctl_notify(ctx->ctl, MDP_NOTIFY_FRAME_TIMEOUT);
 
-	return 0;
 }
 
 static void mdss_mdp_cmd_pingpong_done(void *arg)
@@ -1594,8 +1592,13 @@ static void pingpong_done_work(struct work_struct *work)
 	struct mdss_mdp_ctl *ctl = ctx->ctl;
 
 	if (ctl) {
-		while (atomic_add_unless(&ctx->pp_done_cnt, -1, 0))
+		while (atomic_add_unless(&ctx->pp_done_cnt, -1, 0)){
 			mdss_mdp_ctl_notify(ctx->ctl, MDP_NOTIFY_FRAME_DONE);
+			if(atomic_read(&ctx->pp_done_cnt) < 0){
+				pr_err("%s: pp done count is abnormal %d, reset the pp done count to prevent CPU busy loop\n", __func__, atomic_read(&ctx->pp_done_cnt));
+				atomic_set(&ctx->pp_done_cnt,0);
+			}
+		}
 
 		status = mdss_mdp_ctl_perf_get_transaction_status(ctx->ctl);
 		if (status == 0)
@@ -2935,41 +2938,6 @@ static void __mdss_mdp_kickoff(struct mdss_mdp_ctl *ctl,
 	}
 }
 
-int mdss_mdp_cmd_wait4_vsync(struct mdss_mdp_ctl *ctl)
-{
-	int rc = 0;
-	struct mdss_mdp_cmd_ctx *ctx = ctl->intf_ctx[MASTER_CTX];
-
-	if (!ctx) {
-		pr_err("invalid context to wait for vsync\n");
-		return rc;
-	}
-
-	atomic_inc(&ctx->rdptr_cnt);
-
-	/* enable clks and rd_ptr interrupt */
-	mdss_mdp_setup_vsync(ctx, true);
-
-	/* wait for read pointer */
-	MDSS_XLOG(atomic_read(&ctx->rdptr_cnt));
-	pr_debug("%s: wait for vsync cnt:%d\n",
-		__func__, atomic_read(&ctx->rdptr_cnt));
-
-	rc = mdss_mdp_cmd_wait4readptr(ctx);
-
-	/* wait for 1ms to make sure we are out from trigger window */
-	usleep_range(1000, 1010);
-
-	/* disable rd_ptr interrupt */
-	mdss_mdp_setup_vsync(ctx, false);
-
-	MDSS_XLOG(ctl->num);
-	pr_debug("%s: out from wait for rd_ptr ctl:%d\n", __func__, ctl->num);
-
-	return rc;
-}
-
-
 /*
  * There are 3 partial update possibilities
  * left only ==> enable left pingpong_done
@@ -3435,7 +3403,6 @@ panel_events:
 	ctl->ops.add_vsync_handler = NULL;
 	ctl->ops.remove_vsync_handler = NULL;
 	ctl->ops.reconfigure = NULL;
-	ctl->ops.wait_for_vsync_fnc = NULL;
 
 end:
 	if (!IS_ERR_VALUE(ret)) {
@@ -3836,7 +3803,6 @@ int mdss_mdp_cmd_start(struct mdss_mdp_ctl *ctl)
 	ctl->ops.pre_programming = mdss_mdp_cmd_pre_programming;
 	ctl->ops.update_lineptr = mdss_mdp_cmd_update_lineptr;
 	ctl->ops.panel_disable_cfg = mdss_mdp_cmd_panel_disable_cfg;
-	ctl->ops.wait_for_vsync_fnc = mdss_mdp_cmd_wait4_vsync;
 	pr_debug("%s:-\n", __func__);
 
 	return 0;

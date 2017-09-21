@@ -3,7 +3,7 @@
  * MSM 7k High speed uart driver
  *
  * Copyright (c) 2008 Google Inc.
- * Copyright (c) 2007-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2007-2016, The Linux Foundation. All rights reserved.
  * Modified: Nick Pelly <npelly@google.com>
  *
  * All source code in this file is licensed under the following license
@@ -765,17 +765,23 @@ static int msm_hs_spsconnect_tx(struct msm_hs_port *msm_uport)
 	struct sps_register_event *sps_event = &tx->cons.event;
 	unsigned long flags;
 	unsigned int data;
+	int retry = 0;
 
 	if (tx->flush != FLUSH_SHUTDOWN) {
 		MSM_HS_ERR("%s:Invalid flush state:%d\n", __func__, tx->flush);
 		return 0;
 	}
 
+retry_sps_connect:
 	/* Establish connection between peripheral and memory endpoint */
 	ret = sps_connect(sps_pipe_handle, sps_config);
 	if (ret) {
 		MSM_HS_ERR("msm_serial_hs: sps_connect() failed for tx!!\n"
 		"pipe_handle=0x%p ret=%d", sps_pipe_handle, ret);
+		if (retry < 3) {
+			++retry;
+			goto retry_sps_connect;
+		}
 		return ret;
 	}
 	/* Register callback event for EOT (End of transfer) event. */
@@ -827,12 +833,18 @@ static int msm_hs_spsconnect_rx(struct uart_port *uport)
 	struct sps_connect *sps_config = &rx->prod.config;
 	struct sps_register_event *sps_event = &rx->prod.event;
 	unsigned long flags;
+	int retry = 0;
 
+retry_sps_connect:
 	/* Establish connection between peripheral and memory endpoint */
 	ret = sps_connect(sps_pipe_handle, sps_config);
 	if (ret) {
 		MSM_HS_ERR("msm_serial_hs: sps_connect() failed for rx!!\n"
 		"pipe_handle=0x%p ret=%d", sps_pipe_handle, ret);
+		if (retry < 3) {
+			++retry;
+			goto retry_sps_connect;
+		}
 		return ret;
 	}
 	/* Register callback event for DESC_DONE event. */
@@ -1436,13 +1448,13 @@ static void msm_hs_submit_tx_locked(struct uart_port *uport)
 	hex_dump_ipc(msm_uport, tx->ipc_tx_ctxt, "Tx",
 			&tx_buf->buf[tx_buf->tail], (u64)src_addr, tx_count);
 	sps_pipe_handle = tx->cons.pipe_handle;
+	/* Queue transfer request to SPS */
+	ret = sps_transfer_one(sps_pipe_handle, src_addr, tx_count,
+				msm_uport, flags);
 
 	/* Set 1 second timeout */
 	mod_timer(&tx->tx_timeout_timer,
 		jiffies + msecs_to_jiffies(MSEC_PER_SEC));
-	/* Queue transfer request to SPS */
-	ret = sps_transfer_one(sps_pipe_handle, src_addr, tx_count,
-				msm_uport, flags);
 
 	MSM_HS_DBG("%s:Enqueue Tx Cmd, ret %d\n", __func__, ret);
 }

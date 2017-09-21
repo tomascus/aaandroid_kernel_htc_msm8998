@@ -1221,15 +1221,6 @@ static int __configure_pipe_params(struct msm_fb_data_type *mfd,
 		goto end;
 	}
 
-	/* scaling is not allowed for solid_fill layers */
-	if ((pipe->flags & MDP_SOLID_FILL) &&
-		((pipe->src.w != pipe->dst.w) ||
-			(pipe->src.h != pipe->dst.h))) {
-		pr_err("solid fill pipe:%d cannot have scaling\n", pipe->num);
-		ret = -EINVAL;
-		goto end;
-	}
-
 	/*
 	 * unstage the pipe if it's current z_order does not match with new
 	 * z_order because client may only call the validate.
@@ -2992,6 +2983,12 @@ int mdss_mdp_layer_pre_commit_wfd(struct msm_fb_data_type *mfd,
 	if (commit->output_layer) {
 		wfd = mdp5_data->wfd;
 		output_layer = commit->output_layer;
+
+		if (output_layer->buffer.plane_count > MAX_PLANES) {
+			pr_err("Output buffer plane_count exceeds MAX_PLANES limit:%d\n",
+					output_layer->buffer.plane_count);
+			return -EINVAL;
+		}
 
 		data = mdss_mdp_wfd_add_data(wfd, output_layer);
 		if (IS_ERR_OR_NULL(data))
